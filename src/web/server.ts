@@ -30,7 +30,7 @@ export function handleApi(ctx: CliContext, req: http.IncomingMessage, res: http.
   const days = Math.max(1, Math.min(365, Number(url.searchParams.get('days')) || 30));
   const tz = ctx.tz;
   const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
-  const events = filterEvents(ctx.events, { since });
+  const events = filterEvents(ctx.events, { since, tz });
 
   const byDay = groupByDay(events, tz).map((d) => ({
     day: d.key,

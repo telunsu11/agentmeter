@@ -31,12 +31,44 @@ describe('claude 适配器', () => {
     expect(e.projectDir).toBe('/tmp/p1');
   });
 
-  it('相同 message.id 的重复落盘只计一次', () => {
+  it('流式多行（同 message.id）：adapter 全部产出并带 dedupKey，scanner 负责折叠', () => {
     const dir = tmpDir();
-    const dup = claudeAssistant({ msgId: 'msg-1', requestId: 'req-1' });
-    const file = writeLines(dir, 'sess-a.jsonl', [dup, { ...dup }, claudeAssistant({ msgId: 'msg-2' })]);
+    const dup = claudeAssistant({ msgId: 'msg-1', requestId: 'req-1', input: 0, output: 0 });
+    const file = writeLines(dir, 'sess-a.jsonl', [
+      dup,
+      claudeAssistant({ msgId: 'msg-1', requestId: 'req-1', input: 5000, output: 300, cacheRead: 20000 }),
+      claudeAssistant({ msgId: 'msg-2' }),
+    ]);
     const out = claudeAdapter.parseFull(file);
-    expect(out.events).toHaveLength(2);
+    // adapter 层不去重：3 条都产出
+    expect(out.events).toHaveLength(3);
+    expect(out.events.filter((e) => e.meta?.dedupKey === 'msg-1:req-1')).toHaveLength(2);
+  });
+
+  it('scanner 按 dedupKey 折叠，保留用量最大的一条（含跨增量批次）', async () => {
+    const { Scanner } = await import('../src/core/scanner.js');
+    const fs2 = (await import('node:fs')).default;
+    const path2 = (await import('node:path')).default;
+    const dataDir = tmpDir();
+    const cacheDir = tmpDir();
+    const file = writeLines(dataDir, 'sess-a.jsonl', [
+      claudeAssistant({ msgId: 'msg-1', input: 0, output: 0 }),
+    ]);
+    const adapter = {
+      ...claudeAdapter,
+      defaultDir: () => dataDir,
+      listFiles: () => fs2.readdirSync(dataDir).map((f: string) => path2.join(dataDir, f)),
+    };
+    const s1 = await new Scanner({ adapters: [adapter as any], cacheDir }).scan();
+    expect(s1.events).toHaveLength(1);
+    expect(s1.events[0].inputTokens).toBe(0);
+
+    // 同一消息的"完整 usage 行"稍后追加（模拟流式完成跨越两次扫描）
+    fs2.appendFileSync(file, JSON.stringify(claudeAssistant({ msgId: 'msg-1', input: 5000, output: 300, cacheRead: 20000 })) + '\n');
+    const s2 = await new Scanner({ adapters: [adapter as any], cacheDir }).scan();
+    expect(s2.events).toHaveLength(1); // 折叠为一条
+    expect(s2.events[0].inputTokens).toBe(5000); // 保留 max
+    expect(s2.events[0].cacheReadTokens).toBe(20000);
   });
 
   it('提取工具路径与错误签名（脱敏哈希）', () => {
@@ -85,6 +117,18 @@ describe('zcode 适配器', () => {
     ]);
     const out = zcodeAdapter.parseFull(file);
     expect(out.events[0].meta?.internal).toBe(true);
+  });
+
+  it('空 usage {}（被中断/进行中）不产生事件', () => {
+    const dir = tmpDir();
+    const aborted = zcodeTurn({});
+    // 直接改造成 usage 为空对象的真实形态
+    const line = JSON.parse(JSON.stringify(aborted));
+    line.response.usage = {};
+    const file = writeLines(dir, 'model-io-sess_abc123.jsonl', [line, zcodeTurn({ input: 100 })]);
+    const out = zcodeAdapter.parseFull(file);
+    expect(out.events).toHaveLength(1);
+    expect(out.events[0].inputTokens).toBe(100);
   });
 
   it('从 system 提示词提取项目目录', () => {

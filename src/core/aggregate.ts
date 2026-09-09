@@ -2,17 +2,21 @@ import { AgentId, TokenTotals, UsageEvent, ZERO_TOTALS, addTokens } from './mode
 import { dayKey, monthKey } from './util.js';
 
 export interface RangeFilter {
-  since?: string; // YYYY-MM-DD
+  since?: string; // YYYY-MM-DD（按 tz 的本地日期）
   until?: string; // YYYY-MM-DD（含）
   agent?: AgentId[];
   project?: string; // 子串匹配
+  /** 日期归属时区；缺省 UTC */
+  tz?: string;
 }
 
 export function filterEvents(events: UsageEvent[], f: RangeFilter): UsageEvent[] {
+  const tz = f.tz || 'UTC';
   return events.filter((e) => {
     if (f.agent && f.agent.length && !f.agent.includes(e.agent)) return false;
     if (f.project && !e.projectDir.includes(f.project)) return false;
-    const day = e.ts.slice(0, 10);
+    // 与报表口径一致：按本地时区判定事件属于哪一天
+    const day = dayKey(e.ts, tz);
     if (f.since && day < f.since) return false;
     if (f.until && day > f.until) return false;
     return true;

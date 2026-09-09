@@ -8,7 +8,7 @@ export async function runSessionsCommand(ctx: CliContext, flags: Record<string, 
   const since = flagString(flags, 'since');
   const until = flagString(flags, 'until');
   const top = flagNumber(flags, 'top') || 20;
-  const filtered = filterEvents(ctx.events, { since, until });
+  const filtered = filterEvents(ctx.events, { since, until, tz: ctx.tz });
   const sessions = groupBySession(filtered);
 
   if (flags['json']) {

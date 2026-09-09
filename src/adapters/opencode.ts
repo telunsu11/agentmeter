@@ -51,10 +51,12 @@ export const opencodeAdapter: AgentAdapter = {
         const data = JSON.parse(row.data);
         const tokens = data?.tokens || {};
         const cache = tokens.cache || {};
-        const model = String(data?.model?.modelID || 'unknown').toLowerCase();
+        // 新版 schema：modelID/providerID 在顶层；旧版在 data.model 里
+        const model = String(data?.modelID || data?.model?.modelID || 'unknown').toLowerCase();
         const sessionId = String(row.sid || '');
-        const projectDir = dirBySession.get(sessionId) || '';
-        const ts = isoFromEpochMs(Number(row.t) || 0);
+        const projectDir = dirBySession.get(sessionId) || data?.path?.cwd || '';
+        // time.completed 是响应完成时刻（比 created 更贴近用量发生时间）
+        const ts = isoFromEpochMs(Number(data?.time?.completed || row.t) || 0);
         const input = Number(tokens.input) || 0;
         const output = (Number(tokens.output) || 0) + (Number(tokens.reasoning) || 0);
         const cacheRead = Number(cache.read) || 0;

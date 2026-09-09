@@ -29,7 +29,7 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
   }
   findings.sort((a, b) => rawTotal(b.tokensWasted) - rawTotal(a.tokensWasted));
 
-  const inRange = filterEvents(ctx.events, { since, until });
+  const inRange = filterEvents(ctx.events, { since, until, tz: ctx.tz });
   const scopeTotal = rawTotal(totalsOf(inRange));
   const { byType, grand } = wasteTotals(findings);
 
@@ -69,8 +69,10 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
 
   const ratio = scopeTotal > 0 ? rawTotal(grand) / scopeTotal : 0;
   const ratioColored = ratio > 0.3 ? C.red((ratio * 100).toFixed(1) + '%') : ratio > 0.1 ? C.yellow((ratio * 100).toFixed(1) + '%') : C.green((ratio * 100).toFixed(1) + '%');
+  const wasteTotal = rawTotal(grand);
+  const wasteColored = wasteTotal > 0 ? C.bold(C.red(fmtTokens(wasteTotal))) : C.dim(fmtTokens(wasteTotal));
   console.log(
-    `估算浪费 ${C.bold(C.red(fmtTokens(rawTotal(grand))))} token（约占 ${ratioColored}）`,
+    `估算浪费 ${wasteColored} token（约占 ${ratioColored}）`,
   );
   console.log(C.dim('口径：缓存读按原量计入浪费（对订阅制用户是真实配额）；各信号独立估算，可能相互重叠。'));
   console.log();

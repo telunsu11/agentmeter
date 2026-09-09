@@ -36,6 +36,11 @@ export interface EventMeta {
   subagent?: boolean;
   /** 事件来源文件（调试用） */
   sourceFile?: string;
+  /**
+   * 跨行/跨批去重键（如 Claude 流式写入的多行共用一个 message.id）。
+   * scanner 按 key 折叠，保留用量最大的一条（流式行 usage 单调递增）。
+   */
+  dedupKey?: string;
 }
 
 export interface TokenTotals {

@@ -8,7 +8,7 @@ import { C, fmtNum, fmtTokens, renderTable, bar, shortenDir, fmtUsd } from '../f
 export async function runProjectsCommand(ctx: CliContext, flags: Record<string, string | boolean>): Promise<void> {
   const since = flagString(flags, 'since');
   const until = flagString(flags, 'until');
-  const filtered = filterEvents(ctx.events, { since, until });
+  const filtered = filterEvents(ctx.events, { since, until, tz: ctx.tz });
   const projects = groupByProject(filtered);
   const max = Math.max(0, ...projects.map((p) => rawTotal(p.totals)));
   const showCost = flags['cost'] === true;

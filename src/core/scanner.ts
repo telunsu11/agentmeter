@@ -11,7 +11,7 @@ import { readFileTail } from './util.js';
  * - 缓存只存聚合事件与脱敏轨迹，绝不落任何对话正文 —— 隐私承诺的一部分
  */
 
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 
 export interface FileScanEntry {
   size: number;
@@ -162,15 +162,12 @@ export class Scanner {
           const outcome = incremental
             ? adapter.parseIncremental(file, prev.offset, { entry: prev })
             : adapter.parseFull(file);
-          cache.files[file] = {
-            size: stat.size,
-            mtimeMs: stat.mtimeMs,
-            offset: outcome.nextOffset,
-            events: incremental ? [...prev.events, ...outcome.events] : outcome.events,
-            traces: incremental ? [...prev.traces, ...outcome.traces] : outcome.traces,
-            head: outcome.head ?? (incremental ? prev.head : undefined),
-            dedup: outcome.dedup ?? (incremental ? prev.dedup : undefined),
-          };
+          cache.files[file] = collapseDedup(
+            stat.size,
+            stat.mtimeMs,
+            outcome,
+            incremental ? prev : undefined,
+          );
         } catch (err) {
           // 单文件解析失败不拖垮整体；保留旧缓存条目
           if (prev) cache.files[file] = { ...prev, size: stat.size, mtimeMs: stat.mtimeMs };
@@ -205,6 +202,83 @@ function safeList(adapter: AgentAdapter, dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 按 meta.dedupKey 折叠事件/轨迹：同一 key 保留用量最大的一对。
+ * 背景：Claude Code 流式写入会把一条 assistant 消息拆成多行（共用 message.id），
+ * 首行 usage 常为 0、末行才是完整用量；且消息可能跨越两次增量扫描。
+ * usage 随流式单调递增，取 max 即真实值。
+ */
+function collapseDedup(
+  size: number,
+  mtimeMs: number,
+  outcome: ParseOutcome,
+  prev?: FileScanEntry,
+): FileScanEntry {
+  let events = prev ? [...prev.events, ...outcome.events] : outcome.events;
+  let traces = prev ? [...prev.traces, ...outcome.traces] : outcome.traces;
+
+  if (events.some((e) => e.meta?.dedupKey)) {
+    const byKey = new Map<string, number>(); // key -> 当前最优事件下标
+    const kept: UsageEvent[] = [];
+    const keptTraces: TurnTrace[] = [];
+    for (let i = 0; i < events.length; i++) {
+      const key = events[i].meta?.dedupKey;
+      if (!key) {
+        kept.push(events[i]);
+        if (traces[i]) keptTraces.push(traces[i]);
+        continue;
+      }
+      const cur = byKey.get(key);
+      if (cur === undefined) {
+        byKey.set(key, kept.length);
+        kept.push(events[i]);
+        if (traces[i]) keptTraces.push(traces[i]);
+      } else {
+        // 保留用量更大的那条（流式 usage 单调递增）；
+        // 但被折叠行的工具调用块（可能分布在不同行）要合并进来，供浪费审计使用
+        if (traces[i] && keptTraces[cur]) {
+          keptTraces[cur].tools = mergeTools(keptTraces[cur].tools, traces[i].tools);
+        }
+        if (eventTotal(events[i]) > eventTotal(kept[cur])) {
+          kept[cur] = events[i];
+          if (traces[i]) keptTraces[cur] = traces[i];
+        }
+      }
+    }
+    events = kept;
+    traces = keptTraces;
+  }
+
+  return {
+    size,
+    mtimeMs,
+    offset: outcome.nextOffset,
+    events,
+    traces,
+    head: outcome.head ?? (prev ? prev.head : undefined),
+    dedup: outcome.dedup ?? (prev ? prev.dedup : undefined),
+  };
+}
+
+function eventTotal(e: UsageEvent): number {
+  return e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
+}
+
+/** 合并两个工具摘要列表，按 (name|path|errSig|error) 去重 */
+function mergeTools(a: TurnTrace['tools'], b: TurnTrace['tools']): TurnTrace['tools'] {
+  if (!b || b.length === 0) return a;
+  const seen = new Set(a.map((t) => `${t.name}|${t.path || ''}|${t.errSig || ''}|${t.error ? 1 : 0}`));
+  const out = [...a];
+  for (const t of b) {
+    const k = `${t.name}|${t.path || ''}|${t.errSig || ''}|${t.error ? 1 : 0}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(t);
+    }
+  }
+  return out;
 }
 
 /** 列目录下的 *.jsonl（一层） */

@@ -8,13 +8,16 @@ import {
   listJsonlRecursive,
 } from '../core/scanner.js';
 import { TokenTotals, TurnTrace, UsageEvent } from '../core/model.js';
-import { errorSignature, fnv1a, parseJsonLines, readFileTail, unmungeClaudeDir } from '../core/util.js';
+import { errorSignature, parseJsonLines, readFileTail, unmungeClaudeDir } from '../core/util.js';
 
 /**
  * Claude Code 适配器
  * 数据：~/.claude/projects/<munged-cwd>/<sessionId>.jsonl
  * 每行一条消息记录；assistant 记录带 message.usage。
- * 重复计数防御：Claude Code 偶尔会把同一 message.id 重复落盘，按 id 去重。
+ *
+ * 重要：Claude Code 流式写入会把一条 assistant 消息拆成多行（共用同一
+ * message.id），首行 usage 常为 0、末行才是完整用量。因此这里不去重跳行，
+ * 而是给每个事件打上 dedupKey，由 scanner 按 key 折叠并保留用量最大者。
  */
 
 interface ClaudeRecord {
@@ -39,8 +42,6 @@ interface ClaudeRecord {
   };
 }
 
-const DEDUP_CAP = 5000;
-
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   displayName: 'Claude Code',
@@ -58,13 +59,13 @@ export const claudeAdapter: AgentAdapter = {
     const text = fs.readFileSync(file, 'utf8');
     const lines = text.split('\n').filter((l) => l.trim());
     const stat = fs.statSync(file);
-    const outcome = parseClaudeLines(lines, file, undefined);
+    const outcome = parseClaudeLines(lines, file);
     return { ...outcome, nextOffset: stat.size };
   },
 
-  parseIncremental(file: string, offset: number, ctx: AdapterContext): ParseOutcome {
+  parseIncremental(file: string, offset: number, _ctx: AdapterContext): ParseOutcome {
     const tail = readFileTail(file, offset);
-    const outcome = parseClaudeLines(tail.lines, file, ctx.entry);
+    const outcome = parseClaudeLines(tail.lines, file);
     return { ...outcome, nextOffset: tail.nextOffset };
   },
 };
@@ -72,13 +73,10 @@ export const claudeAdapter: AgentAdapter = {
 function parseClaudeLines(
   lines: string[],
   file: string,
-  prev?: { dedup?: string[] },
-): { events: UsageEvent[]; traces: TurnTrace[]; dedup?: string[] } {
+): { events: UsageEvent[]; traces: TurnTrace[] } {
   const records = parseJsonLines<ClaudeRecord>(lines);
   const events: UsageEvent[] = [];
   const traces: TurnTrace[] = [];
-  const dedup = new Set<string>(prev?.dedup || []);
-  const newKeys: string[] = [];
 
   // 跨 assistant 事件的挂起工具结果（错误信息），归入下一个 trace
   let pendingErrors: { name: string; error: boolean; errSig?: string }[] = [];
@@ -92,15 +90,11 @@ function parseClaudeLines(
     if (rec.type !== 'assistant' || !rec.message?.usage) continue;
 
     const msg = rec.message;
-    const key = fnv1a(`${msg.id || rec.uuid || ''}:${rec.requestId || ''}`);
-    if (dedup.has(key)) continue;
-    dedup.add(key);
-    newKeys.push(key);
-
     const u = msg.usage || {};
     const model = (msg.model || 'unknown').toLowerCase();
     const ts = rec.timestamp || new Date().toISOString();
     const projectDir = rec.cwd || unmungeClaudeDir(path.basename(path.dirname(file)));
+    const dedupKey = `${msg.id || rec.uuid || ''}:${rec.requestId || ''}`;
 
     const event: UsageEvent = {
       ts,
@@ -117,6 +111,7 @@ function parseClaudeLines(
         isApiError: rec.isApiErrorMessage === true,
         subagent: rec.isSidechain === true,
         sourceFile: file,
+        dedupKey,
       },
     };
     events.push(event);
@@ -151,9 +146,7 @@ function parseClaudeLines(
     });
   }
 
-  // dedup 数组封顶，防止无界增长
-  const keep = [...dedup].slice(-DEDUP_CAP);
-  return { events, traces, dedup: keep };
+  return { events, traces };
 }
 
 /** 从 user 记录的 tool_result 里提取错误（归入 pendingErrors） */

@@ -95,7 +95,8 @@ function parseZCodeLines(
 
   for (const rec of records) {
     const usage = rec.response?.usage;
-    if (!usage) continue; // 未完成/被中断的请求不产生用量
+    // 空 usage 对象 = 请求被中断/进行中，未产生计费用量，跳过
+    if (!usage || !Object.values(usage).some((v) => typeof v === 'number')) continue;
 
     const ts = rec.completedAt || rec.startedAt || new Date().toISOString();
     const model = (

@@ -22,7 +22,7 @@ export async function runStatusline(flags: Record<string, string | boolean>): Pr
   const ctx = await buildContext({ flags });
   const tz = ctx.tz;
   const today = dayKey(new Date().toISOString(), tz);
-  const todayEvents = filterEvents(ctx.events, { since: today, until: today });
+  const todayEvents = filterEvents(ctx.events, { since: today, until: today, tz });
   const t = totalsOf(todayEvents);
 
   const parts: string[] = [];

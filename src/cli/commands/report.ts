@@ -24,6 +24,7 @@ export async function runReportCommand(ctx: CliContext, cmd: string, flags: Reco
     since: range.since,
     until: range.until,
     agent: undefined,
+    tz,
   }).sort((a, b) => a.ts.localeCompare(b.ts));
 
   const totals = totalsOf(filtered);
@@ -209,7 +210,7 @@ function printMonthTable(ctx: CliContext, events: UsageEvent[], tz: string): voi
   // 本月（或最新月份）agent 细分
   const latest = months[months.length - 1];
   if (latest) {
-    const monthEvents = events.filter((e) => e.ts.slice(0, 7) === latest.key || dayKey(e.ts, tz).slice(0, 7) === latest.key);
+    const monthEvents = events.filter((e) => dayKey(e.ts, tz).slice(0, 7) === latest.key);
     console.log(C.bold(`${latest.key} 按 agent`));
     const byAgent = new Map<string, number>();
     for (const e of monthEvents) byAgent.set(e.agent, (byAgent.get(e.agent) || 0) + weightedTotal(evTokens(e)));
