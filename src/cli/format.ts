@@ -71,24 +71,20 @@ export interface Column {
 }
 
 export function renderTable(cols: Column[], rows: string[][], opts?: { maxWidth?: number }): string {
+  // 列宽按视觉宽度计算（CJK=2 列），表头与数据才能真正对齐
   const widths = cols.map((col, i) => {
-    const dataW = Math.max(col.header.length, ...rows.map((r) => stripAnsi(r[i] || '').length));
+    const dataW = Math.max(visualWidth(col.header), ...rows.map((r) => visualWidth(r[i] || '')));
     const w = Math.min(col.width ?? dataW, dataW);
     return w;
   });
-  const pad = (s: string, w: number, align: 'left' | 'right') => {
-    const visible = stripAnsi(s);
-    const gap = Math.max(0, w - visible.length);
-    return align === 'right' ? ' '.repeat(gap) + s : s + ' '.repeat(gap);
-  };
   const headerLine = cols
-    .map((col, i) => pad(col.header, widths[i], col.align || 'left'))
+    .map((col, i) => padVisual(col.header, widths[i], col.align || 'left'))
     .join('  ');
   const sepLine = widths.map((w) => '─'.repeat(w)).join('  ');
   const lines = [C.bold(headerLine), C.gray(sepLine)];
   for (const row of rows) {
     lines.push(cols.map((col, i) => {
-      const cell = pad(row[i] || '', widths[i], col.align || 'left');
+      const cell = padVisual(row[i] || '', widths[i], col.align || 'left');
       return col.color ? col.color(cell) : cell;
     }).join('  '));
   }
@@ -98,6 +94,52 @@ export function renderTable(cols: Column[], rows: string[][], opts?: { maxWidth?
 export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/* ---------------- 终端视觉宽度 ----------------
+ * 终端按"列"渲染：CJK/全角/emoji 占 2 列，ASCII 占 1 列。
+ * 列宽与补空格都必须按视觉宽度算，否则中文表头会把右边的列推歪。
+ */
+
+/** 单个码点的终端占宽（覆盖 CJK/全角/emoji 常用区段） */
+function charWidth(cp: number): number {
+  if (cp === 0) return 0;
+  if (cp >= 0x0300 && cp <= 0x036f) return 0; // 组合附标
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) || // 谚文 Jamo
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK 部首/符号（不含 U+303F）
+    (cp >= 0x3041 && cp <= 0x33ff) || // 假名 + CJK 注音/兼容
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK 扩展 A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK 统一表意
+    (cp >= 0xa000 && cp <= 0xa4cf) || // 彝文
+    (cp >= 0xac00 && cp <= 0xd7a3) || // 谚文音节
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK 兼容表意
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK 兼容形式
+    (cp >= 0xff00 && cp <= 0xff60) || // 全角 ASCII/标点
+    (cp >= 0xffe0 && cp <= 0xffe6) || // 全角符号
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji
+    (cp >= 0x1f000 && cp <= 0x1f2ff) || // 麻将/扑克 emoji
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK 扩展 B+
+  ) {
+    return 2;
+  }
+  if (cp >= 0x2600 && cp <= 0x27bf) return 2; // 杂项符号（⚡ 等）
+  return 1;
+}
+
+/** 终端视觉宽度：自动剥离 ANSI 颜色码后按码点求和 */
+export function visualWidth(s: string): number {
+  let w = 0;
+  for (const ch of stripAnsi(s)) {
+    w += charWidth(ch.codePointAt(0) || 0);
+  }
+  return w;
+}
+
+/** 按视觉宽度补空格（中文按 2 列计），用于表格与手工对齐的输出 */
+export function padVisual(s: string, width: number, align: 'left' | 'right' = 'left'): string {
+  const gap = Math.max(0, width - visualWidth(s));
+  return align === 'right' ? ' '.repeat(gap) + s : s + ' '.repeat(gap);
 }
 
 /** 横向柱状图（按最大值归一） */

@@ -5,7 +5,7 @@ import {
 } from '../../core/aggregate.js';
 import { dateKeyToUtc, dayKey } from '../../core/util.js';
 import { UsageEvent } from '../../core/model.js';
-import { C, fmtNum, fmtTokens, renderTable, bar, colorForAgent, totalsBreakdown } from '../format.js';
+import { C, fmtNum, fmtTokens, renderTable, bar, colorForAgent, padVisual, totalsBreakdown } from '../format.js';
 
 /**
  * today / week / month 报告
@@ -215,7 +215,7 @@ function printMonthTable(ctx: CliContext, events: UsageEvent[], tz: string): voi
     const byAgent = new Map<string, number>();
     for (const e of monthEvents) byAgent.set(e.agent, (byAgent.get(e.agent) || 0) + weightedTotal(evTokens(e)));
     for (const [agent, v] of [...byAgent.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`  ${colorForAgent(agent)(agent.padEnd(9))} ${fmtTokens(v)}`);
+      console.log(`  ${colorForAgent(agent)(padVisual(agent, 9))} ${fmtTokens(v)}`);
     }
   }
 }

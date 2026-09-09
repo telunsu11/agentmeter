@@ -1,5 +1,5 @@
 import { CliContext } from '../context.js';
-import { C, fmtNum } from '../format.js';
+import { C, fmtNum, padVisual } from '../format.js';
 
 /** 数据源诊断：各 agent 是否检测到、文件数、事件数、缓存命中情况 */
 export function runSourcesCommand(ctx: CliContext): void {
@@ -11,7 +11,7 @@ export function runSourcesCommand(ctx: CliContext): void {
   for (const s of ctx.scan.sources) {
     const status = s.files === 0 ? C.yellow('无数据') : s.cached ? C.green('缓存命中') : C.green('已解析');
     console.log(
-      `  ${C.bold(s.agent.padEnd(9))} ${status.padEnd(12)} ${C.dim(`文件 ${fmtNum(s.files)}  事件 ${fmtNum(s.events)}`)}`,
+      `  ${C.bold(padVisual(s.agent, 9))} ${padVisual(status, 12)} ${C.dim(`文件 ${fmtNum(s.files)}  事件 ${fmtNum(s.events)}`)}`,
     );
     console.log(C.dim(`           ${s.dir}`));
   }
