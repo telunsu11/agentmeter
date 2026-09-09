@@ -1,5 +1,7 @@
 # ⚡ agentmeter — Coding Agent 的电表 + 用电审计 + 跳闸预警
 
+[![CI](https://github.com/telunsu11/agentmeter/actions/workflows/ci.yml/badge.svg)](https://github.com/telunsu11/agentmeter/actions/workflows/ci.yml)
+
 解析 Claude Code / ZCode / Codex / OpenCode 的本地会话日志，回答三个问题：
 
 1. **token 花在哪了**——今日/本周/本月，按 agent、项目、模型、会话下钻
@@ -47,7 +49,7 @@ node dist/cli/main.js today
 
 ## 浪费审计：六类信号
 
-`agentmeter waste` 对每个会话的脱敏轨迹跑六类检测器：
+`agentmeter waste` 对每个会话的脱敏轨迹跑七类检测器：
 
 | 信号 | 判定 | 浪费量口径 |
 |---|---|---|
@@ -57,6 +59,7 @@ node dist/cli/main.js today
 | **缓存空转** | 单轮缓存读 >100K 且输出 <50 token | 该轮缓存读全量 |
 | **僵尸会话** | 错误收尾 / 过半轮次报错 / 全程几乎零输出 | 会话输入侧全量 |
 | **重复读取** | 同一文件被 Read/Grep ≥4 次 | 信号型（上下文膨胀来源定位） |
+| **长会话税** | 单轮上下文（输入+缓存）≥15 万 token 后仍续跑 ≥3 轮 | 每轮超出健康线的重读量（按 input/缓存占比分摊） |
 
 错误判重使用归一化签名哈希（数字/路径/引号内容抹除后 FNV），**报告里只有聚合数字，永远不落对话正文**。
 
@@ -91,7 +94,7 @@ agentmeter watch install    # 生成 launchd（macOS）/ systemd timer（Linux�
 { "statusLine": { "type": "command", "command": "agentmeter statusline" } }
 ```
 
-显示 `⚡46.10M today`，配置限额后追加最紧窗口的百分比（80%/95% 变色）。
+显示 `⚡46.10M today`；当天存在浪费信号时追加 `⚠浪费≈1.4M`；配置限额后追加最紧窗口的百分比（80%/95% 变色）。
 
 ## 数据源与隐私
 
@@ -110,15 +113,18 @@ agentmeter watch install    # 生成 launchd（macOS）/ systemd timer（Linux�
 
 ## 成本估算口径
 
-默认隐藏（`--cost` 开启）：订阅制（Claude Max、GLM Coding Plan 等）用户的真实成本与 API 牌价无关，agentmeter 以 **token 与配额百分比**为一等公民。成本列基于 `pricing/defaults.json` 的公开牌价（USD/百万 token），可在配置 `pricing` 段按模型覆盖。加权口径：`input + output + cacheWrite + cacheRead/10`。
+默认隐藏（`--cost` 开启）：订阅制（Claude Max、GLM Coding Plan 等）用户的真实成本与 API 牌价无关，agentmeter 以 **token 与配额百分比**为一等公民。`--cost` 在 today/week/month/projects 报表和 `--json` 输出中附加 `成本≈` 列（USD，基于 `pricing/defaults.json` 的公开牌价，可在配置 `pricing` 段按模型覆盖；无牌价的模型显示 `—`）。加权口径：`input + output + cacheWrite + cacheRead/10`。
 
 ## 开发
 
 ```bash
-npm run build      # tsc → dist/
-npm test           # vitest（适配器 / 增量扫描 / 浪费检测 24 例）
+npm run dev -- today   # tsx 直跑 TS 源码（无需预编译）
+npm run build          # tsc → dist/
+npm test               # vitest（适配器 / 增量扫描 / 浪费检测 / 对齐 / 时区）
 npm run typecheck
 ```
+
+CI（GitHub Actions）在 Node 20/22/24 × Linux/macOS 上跑 typecheck + test + build。发布：打 `v*` tag 触发 release 工作流自动 `npm publish`（需在仓库 Secrets 配置 `NPM_TOKEN`），或本地 `npm run build && npm publish`。
 
 架构：`src/adapters/*`（各 agent 日志 → 统一 `UsageEvent`/`TurnTrace`）→ `src/core`（增量扫描、聚合、成本、配额、浪费引擎）→ `src/cli`（命令与渲染）。新增 agent 只需实现一个 adapter。
 

@@ -44,7 +44,7 @@ export function handleApi(ctx: CliContext, req: http.IncomingMessage, res: http.
     project: p.projectDir, weighted: rawTotal(p.totals), sessions: p.sessions.size, events: p.events, agents: [...p.agents],
   }));
 
-  const findings = detectWaste(ctx.traces, ctx.config, since);
+  const findings = detectWaste(ctx.traces, ctx.config, since, undefined, tz);
   const { byType, grand } = wasteTotals(findings);
   const scopeTotal = rawTotal(totalsOf(events));
 
@@ -150,7 +150,7 @@ const PAGE = `<!doctype html>
 <script>
 const fmt = (n) => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const TYPE_LABEL = {api_retry:'API 错误/重试', failure_loop:'失败循环', context_restart:'上下文重启', ineffective_cache:'缓存空转', zombie_session:'僵尸会话', duplicate_reads:'重复读取'};
+const TYPE_LABEL = {api_retry:'API 错误/重试', failure_loop:'失败循环', context_restart:'上下文重启', ineffective_cache:'缓存空转', zombie_session:'僵尸会话', duplicate_reads:'重复读取', context_bloat:'长会话税'};
 
 async function load() {
   const r = await fetch('/api/data.json?days=30');

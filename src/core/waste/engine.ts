@@ -1,5 +1,6 @@
 import { AgentMeterConfig, TokenTotals, TurnTrace, WasteFinding, WasteType, ZERO_TOTALS } from '../model.js';
 import { rawTotal } from '../aggregate.js';
+import { dayKey } from '../util.js';
 
 /**
  * 浪费审计引擎：对每个会话的 TurnTrace 序列跑 6 类信号检测。
@@ -15,12 +16,18 @@ export interface WasteOptions {
   loopMinRepeats: number;
   /** 同文件重复读取阈值 */
   duplicateReadMin: number;
+  /** 长会话税：单轮上下文健康线（token） */
+  contextBloatTokens: number;
+  /** 长会话税：越线后至少再跑的轮数 */
+  contextBloatMinTurns: number;
 }
 
 export function defaultWasteOptions(config?: AgentMeterConfig): WasteOptions {
   return {
     loopMinRepeats: config?.waste?.loopMinRepeats ?? 3,
     duplicateReadMin: config?.waste?.duplicateReadMin ?? 4,
+    contextBloatTokens: config?.waste?.contextBloatTokens ?? 150_000,
+    contextBloatMinTurns: config?.waste?.contextBloatMinTurns ?? 3,
   };
 }
 
@@ -29,12 +36,16 @@ export function detectWaste(
   config?: AgentMeterConfig,
   since?: string,
   until?: string,
+  /** 日期归属时区，与报表口径一致（默认 UTC） */
+  tz = 'UTC',
 ): WasteFinding[] {
   const opts = defaultWasteOptions(config);
   const active = traces.filter((t) => {
     if (t.flags.internal) return false;
-    if (since && t.ts.slice(0, 10) < since) return false;
-    if (until && t.ts.slice(0, 10) > until) return false;
+    // 时区感知的日期边界，与 today/week/month 报表一致
+    const day = dayKey(t.ts, tz);
+    if (since && day < since) return false;
+    if (until && day > until) return false;
     return true;
   });
 
@@ -55,8 +66,53 @@ export function detectWaste(
     findings.push(...detectIneffectiveCache(sorted));
     findings.push(...detectZombieSession(sorted));
     findings.push(...detectDuplicateReads(sorted, opts));
+    findings.push(...detectContextBloat(sorted, opts));
   }
   return findings;
+}
+
+/* ---------- 7. 长会话税：上下文超健康线后仍在续跑 ----------
+ * 会话越长，每轮重读的上下文越大（边际成本递增）。
+ * 检测"单轮上下文（输入+缓存读写）越过健康线后仍继续 ≥N 轮"的会话，
+ * 浪费量 = 每轮超出健康线的部分（按 input/cacheRead/cacheWrite 占比分摊）。
+ * 建议：/compact、开新会话、或让 agent 主动总结收尾。
+ */
+function detectContextBloat(traces: TurnTrace[], opts: WasteOptions): WasteFinding[] {
+  const beyond: TurnTrace[] = [];
+  let peak = 0;
+  for (const t of traces) {
+    const ctx = t.tokens.input + t.tokens.cacheRead + t.tokens.cacheWrite;
+    if (ctx > peak) peak = ctx;
+    if (ctx >= opts.contextBloatTokens) beyond.push(t);
+  }
+  if (beyond.length < opts.contextBloatMinTurns) return [];
+
+  const head = traces[0];
+  let inExcess = 0, crExcess = 0, cwExcess = 0;
+  for (const t of beyond) {
+    const ctx = t.tokens.input + t.tokens.cacheRead + t.tokens.cacheWrite;
+    const excess = ctx - opts.contextBloatTokens;
+    const ratio = ctx > 0 ? excess / ctx : 0;
+    inExcess += Math.round(t.tokens.input * ratio);
+    crExcess += Math.round(t.tokens.cacheRead * ratio);
+    cwExcess += Math.round(t.tokens.cacheWrite * ratio);
+  }
+  const wasted = { input: inExcess, output: 0, cacheRead: crExcess, cacheWrite: cwExcess };
+  return [
+    {
+      type: 'context_bloat',
+      severity: 'medium',
+      agent: head.agent,
+      sessionId: head.sessionId,
+      projectDir: head.projectDir,
+      ts: beyond[0].ts,
+      count: beyond.length,
+      tokensWasted: wasted,
+      detail:
+        `上下文峰值 ${short(peak)} 超过健康线 ${short(opts.contextBloatTokens)} 后又续跑 ${beyond.length} 轮，` +
+        `超出部分的重读约 ${fmt(wasted)} token；建议 /compact 或开新会话`,
+    },
+  ];
 }
 
 function sumTokens(traces: TurnTrace[], from = 0, to = traces.length): TokenTotals {
@@ -270,6 +326,7 @@ export function wasteTotals(findings: WasteFinding[]): { byType: Record<WasteTyp
     ineffective_cache: ZERO_TOTALS,
     zombie_session: ZERO_TOTALS,
     duplicate_reads: ZERO_TOTALS,
+    context_bloat: ZERO_TOTALS,
   } as Record<WasteType, TokenTotals>;
   let grand = ZERO_TOTALS;
   for (const f of findings) {

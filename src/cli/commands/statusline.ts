@@ -1,5 +1,6 @@
 import { buildContext } from '../context.js';
-import { totalsOf, weightedTotal, filterEvents } from '../../core/aggregate.js';
+import { totalsOf, weightedTotal, filterEvents, rawTotal } from '../../core/aggregate.js';
+import { detectWaste } from '../../core/waste/engine.js';
 import { dayKey } from '../../core/util.js';
 import { C, fmtTokens } from '../format.js';
 
@@ -7,19 +8,14 @@ import { C, fmtTokens } from '../format.js';
  * statusline：Claude Code 状态栏集成。
  * settings.json 配置：
  *   "statusLine": { "type": "command", "command": "agentmeter statusline" }
- * Claude 会把会话信息以 JSON 写到 stdin；输出单行用量摘要。
+ * 输出单行：⚡今日加权 · ⚠今日最大浪费信号 · 最紧配额窗口百分比
  */
 
 export async function runStatusline(flags: Record<string, string | boolean>): Promise<void> {
   // 读取 stdin（Claude Code 协议），超时或空 stdin 时也能工作
-  const stdin = await readStdin(1500).catch(() => '');
-  let cwd = '';
-  try {
-    const info = JSON.parse(stdin || '{}');
-    cwd = info?.workspace?.current_dir || info?.cwd || '';
-  } catch {}
+  await readStdin(1500).catch(() => '');
 
-  const ctx = await buildContext({ flags });
+  const ctx = await buildContext({ flags, withTraces: true });
   const tz = ctx.tz;
   const today = dayKey(new Date().toISOString(), tz);
   const todayEvents = filterEvents(ctx.events, { since: today, until: today, tz });
@@ -28,6 +24,14 @@ export async function runStatusline(flags: Record<string, string | boolean>): Pr
   const parts: string[] = [];
   parts.push(`${C.cyan('⚡')}${C.bold(fmtTokens(weightedTotal(t)))}`);
   parts.push(C.dim('today'));
+
+  // 今日最大浪费信号（免费广告位：让用户每次看状态栏都被提醒一次审计）
+  const findings = detectWaste(ctx.traces, ctx.config, today, today, tz)
+    .filter((f) => rawTotal(f.tokensWasted) > 0)
+    .sort((a, b) => rawTotal(b.tokensWasted) - rawTotal(a.tokensWasted));
+  if (findings[0]) {
+    parts.push(C.yellow(`⚠${C.dim('浪费')}≈${fmtTokens(rawTotal(findings[0].tokensWasted))}`));
+  }
 
   // 有配额配置时附加最紧的窗口百分比
   const { quotaStatus } = await import('./quota.js');

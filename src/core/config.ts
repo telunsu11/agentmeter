@@ -51,7 +51,7 @@ export function configExample(): string {
       pricing: { 'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
       paths: {},
       timezone: 'Asia/Shanghai',
-      waste: { loopMinRepeats: 3, duplicateReadMin: 4, minTokensToReport: 10000 },
+      waste: { loopMinRepeats: 3, duplicateReadMin: 4, minTokensToReport: 10000, contextBloatTokens: 150000, contextBloatMinTurns: 3 },
     },
     null,
     2,

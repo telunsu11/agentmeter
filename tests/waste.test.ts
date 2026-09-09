@@ -116,6 +116,48 @@ describe('浪费检测引擎', () => {
     expect(findings).toHaveLength(0);
   });
 
+  it('长会话税：上下文越线后续跑 ≥3 轮触发，浪费=超出健康线部分', () => {
+    // 4 轮，每轮 ctx = 10k 输入 + 190k 缓存读 = 200k（健康线 150k）
+    const fat = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(10000, 500, 190000) });
+    const findings = detectWaste([fat(0), fat(1), fat(2), fat(3)]);
+    const bloat = findings.find((f) => f.type === 'context_bloat');
+    expect(bloat).toBeTruthy();
+    expect(bloat!.count).toBe(4);
+    // 每轮超出 50k，按 cacheRead 占比 190/200 → 47.5k/轮，4 轮 ≈ 190k
+    expect(bloat!.tokensWasted.cacheRead).toBe(190000);
+    expect(bloat!.tokensWasted.input).toBe(10000);
+  });
+
+  it('长会话税：未过线或轮数不足不触发', () => {
+    const thin = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(5000, 500, 50000) });
+    expect(detectWaste(Array.from({ length: 10 }, (_, i) => thin(i))).find((f) => f.type === 'context_bloat')).toBeUndefined();
+
+    // 越线但只跑了 2 轮（阈值 3）→ 不触发
+    const fat = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(10000, 500, 190000) });
+    expect(detectWaste([fat(0), fat(1)]).find((f) => f.type === 'context_bloat')).toBeUndefined();
+  });
+
+  it('长会话税：健康线可配置', () => {
+    const mid = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(4000, 500, 60000) });
+    const cfg = { waste: { contextBloatTokens: 50000, contextBloatMinTurns: 2 } };
+    const findings = detectWaste(Array.from({ length: 3 }, (_, i) => mid(i)), cfg);
+    expect(findings.find((f) => f.type === 'context_bloat')).toBeTruthy();
+  });
+
+  it('时间过滤按时区归属（UTC 日期≠本地日期的边界事件）', () => {
+    // 本地(UTC+8) 2026-06-01 02:00 = UTC 2026-05-31 18:00；带 API 错误标记使过滤结果可观察
+    const sig: TurnTrace = {
+      agent: 'claude', sessionId: 'tz1', projectDir: '/p', model: 'm',
+      ts: '2026-05-31T18:00:00.000Z',
+      tokens: { input: 1000, output: 10, cacheRead: 0, cacheWrite: 0 },
+      tools: [], flags: { isApiError: true },
+    };
+    // UTC 口径：属 5-31，6 月过滤应排除
+    expect(detectWaste([sig], undefined, '2026-06-01', '2026-06-30', 'UTC')).toHaveLength(0);
+    // 上海口径：属 6-01，应包含
+    expect(detectWaste([sig], undefined, '2026-06-01', '2026-06-30', 'Asia/Shanghai')).toHaveLength(1);
+  });
+
   it('正常会话不产生任何信号', () => {
     const findings = detectWaste(
       Array.from({ length: 10 }, (_, i) =>

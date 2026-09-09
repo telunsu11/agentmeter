@@ -96,7 +96,8 @@ export type WasteType =
   | 'context_restart' // 上下文溢出/compact 重启后的缓存重建
   | 'ineffective_cache' // 反复读大上下文但几乎没有产出
   | 'zombie_session' // 异常终止/几乎无产出的会话
-  | 'duplicate_reads'; // 同一文件被反复读取
+  | 'duplicate_reads' // 同一文件被反复读取
+  | 'context_bloat'; // 长会话税：上下文超健康线后仍在续跑
 
 export interface WasteFinding {
   type: WasteType;
@@ -149,6 +150,10 @@ export interface AgentMeterConfig {
     loopMinRepeats?: number;
     duplicateReadMin?: number;
     minTokensToReport?: number;
+    /** 长会话税：单轮上下文（输入+缓存）超过该值视为越线，默认 150000 */
+    contextBloatTokens?: number;
+    /** 越线后至少再跑多少轮才报信号，默认 3 */
+    contextBloatMinTurns?: number;
   };
 }
 

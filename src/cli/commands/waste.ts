@@ -3,7 +3,6 @@ import { flagNumber, flagString } from '../args.js';
 import { detectWaste, wasteTotals } from '../../core/waste/engine.js';
 import { WasteFinding, WasteType } from '../../core/model.js';
 import { filterEvents, rawTotal, totalsOf } from '../../core/aggregate.js';
-import { CostCalculator } from '../../core/cost.js';
 import { C, colorForAgent, fmtTokens, renderTable, shortenDir } from '../format.js';
 
 const TYPE_LABEL: Record<WasteType, string> = {
@@ -13,6 +12,7 @@ const TYPE_LABEL: Record<WasteType, string> = {
   ineffective_cache: '缓存空转',
   zombie_session: '僵尸会话',
   duplicate_reads: '重复读取',
+  context_bloat: '长会话税',
 };
 
 /** waste：浪费审计报告 */
@@ -22,7 +22,7 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
   const minTokens = flagNumber(flags, 'min-tokens') ?? ctx.config.waste?.minTokensToReport ?? 0;
   const typeFilter = flagString(flags, 'type')?.split(',').filter(Boolean) as WasteType[] | undefined;
 
-  let findings = detectWaste(ctx.traces, ctx.config, since, until);
+  let findings = detectWaste(ctx.traces, ctx.config, since, until, ctx.tz);
   if (typeFilter?.length) findings = findings.filter((f) => typeFilter.includes(f.type));
   if (minTokens > 0) {
     findings = findings.filter((f) => rawTotal(f.tokensWasted) >= minTokens || f.type === 'duplicate_reads');
@@ -34,7 +34,7 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
   const { byType, grand } = wasteTotals(findings);
 
   if (flags['json']) {
-    const costCalc = flags['cost'] ? new CostCalculator(ctx.config) : undefined;
+    // 成本以 token 为一等公民：finding 不带模型信息，牌价折算不可信，故不输出成本字段
     console.log(
       JSON.stringify(
         {
@@ -45,10 +45,7 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
           byType: Object.fromEntries(
             (Object.keys(byType) as WasteType[]).map((t) => [t, { label: TYPE_LABEL[t], tokens: byType[t] }]),
           ),
-          findings: findings.slice(0, 100).map((f) => ({
-            ...f,
-            ...(costCalc ? { costEstUsd: costCalc.cost(f.tokensWasted, 'mixed') } : {}),
-          })),
+          findings: findings.slice(0, 100),
         },
         null,
         2,
