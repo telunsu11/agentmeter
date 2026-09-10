@@ -38,7 +38,7 @@ node dist/cli/main.js today
 | `agentmeter projects` | 按项目目录聚合，看哪个项目最烧 |
 | `agentmeter sessions` | 会话级明细 Top N（`--top 20`） |
 | `agentmeter waste` | 浪费审计报告（详见下文） |
-| `agentmeter quota` | 配额窗口使用进度 |
+| `agentmeter quota` | 配额窗口进度；`quota preset claude-pro --write` 一键写入套餐限额 |
 | `agentmeter watch` | 持续监控 + 阈值通知；`--once` 单次；`install` 生成自启动 |
 | `agentmeter statusline` | Claude Code 状态栏集成 |
 | `agentmeter web` | 本地仪表盘（仅 127.0.0.1，`--port` 可改） |
@@ -59,7 +59,7 @@ node dist/cli/main.js today
 | **缓存空转** | 单轮缓存读 >100K 且输出 <50 token | 该轮缓存读全量 |
 | **僵尸会话** | 错误收尾 / 过半轮次报错 / 全程几乎零输出 | 会话输入侧全量 |
 | **重复读取** | 同一文件被 Read/Grep ≥4 次 | 信号型（上下文膨胀来源定位） |
-| **长会话税** | 单轮上下文（输入+缓存）≥15 万 token 后仍续跑 ≥3 轮 | 每轮超出健康线的重读量（按 input/缓存占比分摊） |
+| **长会话税** | 单轮上下文（输入+缓存）≥40 万 token（可配）后仍续跑 ≥3 轮 | 每轮超出健康线的重读量（按 input/缓存占比分摊） |
 
 错误判重使用归一化签名哈希（数字/路径/引号内容抹除后 FNV），**报告里只有聚合数字，永远不落对话正文**。
 

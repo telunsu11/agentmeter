@@ -15,6 +15,12 @@ const TYPE_LABEL: Record<WasteType, string> = {
   context_bloat: '长会话税',
 };
 
+/** 硬浪费：直接可避免的损失（重试、失败循环、僵尸会话的输入侧） */
+const HARD_TYPES: WasteType[] = ['api_retry', 'failure_loop', 'zombie_session'];
+
+/** Top 榜单每类信号最多展示条数：防止单一类型淹没其他更有行动价值的信号 */
+const TOP_PER_TYPE = 3;
+
 /** waste：浪费审计报告 */
 export async function runWasteCommand(ctx: CliContext, flags: Record<string, string | boolean>): Promise<void> {
   const since = flagString(flags, 'since');
@@ -42,6 +48,10 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
           totalTokens: scopeTotal,
           wasteEstTotal: grand,
           wasteRatio: scopeTotal > 0 ? rawTotal(grand) / scopeTotal : 0,
+          hardWasteTotal: rawTotal(wasteTotals(findings.filter((f) => HARD_TYPES.includes(f.type))).grand),
+          hardWasteRatio: scopeTotal > 0
+            ? rawTotal(wasteTotals(findings.filter((f) => HARD_TYPES.includes(f.type))).grand) / scopeTotal
+            : 0,
           byType: Object.fromEntries(
             (Object.keys(byType) as WasteType[]).map((t) => [t, { label: TYPE_LABEL[t], tokens: byType[t] }]),
           ),
@@ -64,14 +74,23 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
     return;
   }
 
-  const ratio = scopeTotal > 0 ? rawTotal(grand) / scopeTotal : 0;
-  const ratioColored = ratio > 0.3 ? C.red((ratio * 100).toFixed(1) + '%') : ratio > 0.1 ? C.yellow((ratio * 100).toFixed(1) + '%') : C.green((ratio * 100).toFixed(1) + '%');
-  const wasteTotal = rawTotal(grand);
-  const wasteColored = wasteTotal > 0 ? C.bold(C.red(fmtTokens(wasteTotal))) : C.dim(fmtTokens(wasteTotal));
+  // 双口径：先给可信的硬浪费，再给含缓存重读的完整口径
+  const hard = wasteTotals(findings.filter((f) => HARD_TYPES.includes(f.type))).grand;
+  const hardTotal = rawTotal(hard);
+  const hardRatio = scopeTotal > 0 ? hardTotal / scopeTotal : 0;
+  const fullTotal = rawTotal(grand);
+  const fullRatio = scopeTotal > 0 ? fullTotal / scopeTotal : 0;
+  const ratioColored = (r: number) =>
+    r > 0.3 ? C.red((r * 100).toFixed(1) + '%') : r > 0.1 ? C.yellow((r * 100).toFixed(1) + '%') : C.green((r * 100).toFixed(1) + '%');
   console.log(
-    `估算浪费 ${wasteColored} token（约占 ${ratioColored}）`,
+    `硬浪费   ${hardTotal > 0 ? C.bold(C.red(fmtTokens(hardTotal))) : C.green(fmtTokens(hardTotal))} token（约占 ${ratioColored(hardRatio)}）` +
+    C.dim('  ← API 重试/失败循环/僵尸会话，直接可避免'),
   );
-  console.log(C.dim('口径：缓存读按原量计入浪费（对订阅制用户是真实配额）；各信号独立估算，可能相互重叠。'));
+  console.log(
+    `含重读   ${fullTotal > hardTotal ? C.yellow(fmtTokens(fullTotal)) : C.dim(fmtTokens(fullTotal))} token（约占 ${ratioColored(fullRatio)}）` +
+    C.dim('  ← 加上缓存重读类（长会话税/空转/重启），可优化'),
+  );
+  console.log(C.dim('各信号独立估算，可能相互重叠；订阅制用户的缓存读是真实配额消耗。'));
   console.log();
 
   // 按类型汇总
@@ -100,10 +119,19 @@ export async function runWasteCommand(ctx: CliContext, flags: Record<string, str
   ));
   console.log();
 
-  // Top 发现
+  // Top 发现（每类最多 TOP_PER_TYPE 条，保证类型多样性）
   const top = flagNumber(flags, 'top') ?? 15;
-  console.log(C.bold(`Top 发现（${Math.min(top, findings.length)} 条，按浪费量排序）`));
-  const rows = findings.slice(0, top).map((f) => [
+  const diverse = (() => {
+    const seen = new Map<WasteType, number>();
+    return findings.filter((f) => {
+      const n = seen.get(f.type) || 0;
+      if (n >= TOP_PER_TYPE) return false;
+      seen.set(f.type, n + 1);
+      return true;
+    });
+  })();
+  console.log(C.bold(`Top 发现（${Math.min(top, diverse.length)} 条，按浪费量排序，每类最多 ${TOP_PER_TYPE} 条）`));
+  const rows = diverse.slice(0, top).map((f) => [
     sevColor(f.severity)(f.severity),
     TYPE_LABEL[f.type],
     colorForAgent(f.agent)(f.agent),

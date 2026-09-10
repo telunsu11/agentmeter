@@ -37,6 +37,11 @@ export async function runReportCommand(ctx: CliContext, cmd: string, flags: Reco
     return;
   }
 
+  if (flags['markdown'] && cmd === 'week') {
+    printMarkdownWeek(ctx, filtered, tz, range);
+    return;
+  }
+
   printHeader(ctx, cmd, range, filtered.length);
 
   const costSummary = costCalc && filtered.length > 0 ? costCalc.costOfEvents(filtered) : undefined;
@@ -187,19 +192,32 @@ function printTodayDetail(ctx: CliContext, events: UsageEvent[], tz: string, cos
   console.log(renderTable(modelCols, modelRows));
   console.log();
 
-  // 对比昨天
-  const todayKey = dayKey(new Date().toISOString(), tz);
-  const yKey = shiftDay(todayKey, -1);
-  const yEvents = ctx.events.filter((e) => dayKey(e.ts, tz) === yKey);
-  const yTotals = totalsOf(yEvents);
-  const cur = weightedTotal(totalsOf(events));
-  const y = weightedTotal(yTotals);
-  if (y > 0) {
-    const ratio = cur / y;
-    const arrow = ratio >= 1.15 ? '↑' : ratio <= 0.85 ? '↓' : '≈';
-    const col = ratio >= 1.15 ? C.red : ratio <= 0.85 ? C.green : C.yellow;
-    console.log(`昨日同期口径 ${C.dim(fmtTokens(y))}  →  今天 ${arrow} ${col(fmtTokens(cur))} (${(ratio * 100).toFixed(0)}%)`);
+  // 对比昨日同时段（全天口径在上午只会制造焦虑，中午前不显示）
+  const now = new Date();
+  const nowMinutes = localMinutesOfDay(now.toISOString(), tz);
+  const nowHour = Math.floor(nowMinutes / 60);
+  if (nowHour >= 12) {
+    const todayKey = dayKey(now.toISOString(), tz);
+    const yKey = shiftDay(todayKey, -1);
+    const yEvents = ctx.events.filter(
+      (e) => dayKey(e.ts, tz) === yKey && localMinutesOfDay(e.ts, tz) <= nowMinutes,
+    );
+    const y = weightedTotal(totalsOf(yEvents));
+    const cur = weightedTotal(totalsOf(events));
+    if (y > 0) {
+      const ratio = cur / y;
+      const arrow = ratio >= 1.15 ? '↑' : ratio <= 0.85 ? '↓' : '≈';
+      const col = ratio >= 1.15 ? C.red : ratio <= 0.85 ? C.green : C.yellow;
+      console.log(`昨日同时段 ${C.dim(fmtTokens(y))}  →  今天 ${arrow} ${col(fmtTokens(cur))} (${(ratio * 100).toFixed(0)}%)`);
+    }
   }
+}
+
+/** 指定时间戳在 tz 下的当日分钟数（0:00 = 0） */
+function localMinutesOfDay(ts: string, tz: string): number {
+  const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const [h, m] = fmt.format(new Date(ts)).split(':').map(Number);
+  return h * 60 + m;
 }
 
 function printDayTable(ctx: CliContext, events: UsageEvent[], tz: string, costCalc?: CostCalculator): void {
@@ -309,4 +327,100 @@ function shiftMonth(day: string, delta: number): string {
   const [y, m] = day.split('-').map(Number);
   const d = new Date(Date.UTC(y, m - 1 + delta, 1));
   return d.toISOString().slice(0, 10);
+}
+
+/* ---------------- markdown 周报（可截图分享） ---------------- */
+
+import { groupByProject, groupBySession } from '../../core/aggregate.js';
+import { detectWaste } from '../../core/waste/engine.js';
+import { WasteType } from '../../core/model.js';
+
+const MD_TYPE_LABEL: Record<WasteType, string> = {
+  api_retry: 'API 错误/重试',
+  failure_loop: '失败循环',
+  context_restart: '上下文重启',
+  ineffective_cache: '缓存空转',
+  zombie_session: '僵尸会话',
+  duplicate_reads: '重复读取',
+  context_bloat: '长会话税',
+};
+
+function printMarkdownWeek(
+  ctx: CliContext,
+  events: UsageEvent[],
+  tz: string,
+  range: { since?: string; until?: string },
+): void {
+  const totals = totalsOf(events);
+  const w = weightedTotal(totals);
+  const raw = rawTotal(totals);
+
+  // 上周环比
+  const untilKey = range.until || dayKey(new Date().toISOString(), tz);
+  const prevUntil = shiftDay(range.since || shiftDay(untilKey, -6), -1);
+  const prevSince = shiftDay(prevUntil, -6);
+  const prevEvents = ctx.events.filter((e) => {
+    const d = dayKey(e.ts, tz);
+    return d >= prevSince && d <= prevUntil;
+  });
+  const prevW = weightedTotal(totalsOf(prevEvents));
+  const wow = prevW > 0 ? `${w >= prevW ? '+' : ''}${(((w - prevW) / prevW) * 100).toFixed(0)}%` : '—';
+
+  const lines: string[] = [];
+  lines.push(`# ⚡ agentmeter 周报`);
+  lines.push('');
+  lines.push(`> ${range.since || shiftDay(untilKey, -6)} ~ ${untilKey} · ${ctx.tz} · 纯本地统计`);
+  lines.push('');
+  lines.push(`**本周加权 ${fmtTokens(w)}**（raw ${fmtTokens(raw)} · ${fmtNum(events.length)} 次请求 · 环比上周 ${wow}）`);
+  lines.push('');
+
+  // 按 agent
+  const byAgent = new Map<string, { wv: number; n: number }>();
+  for (const e of events) {
+    const b = byAgent.get(e.agent) || { wv: 0, n: 0 };
+    b.wv += weightedTotal({ input: e.inputTokens, output: e.outputTokens, cacheRead: e.cacheReadTokens, cacheWrite: e.cacheWriteTokens });
+    b.n++;
+    byAgent.set(e.agent, b);
+  }
+  lines.push('## 按 agent');
+  lines.push('');
+  lines.push('| agent | 加权 | 请求 |');
+  lines.push('|---|---:|---:|');
+  for (const [a, b] of [...byAgent.entries()].sort((x, y) => y[1].wv - x[1].wv)) {
+    lines.push(`| ${a} | ${fmtTokens(b.wv)} | ${fmtNum(b.n)} |`);
+  }
+  lines.push('');
+
+  // Top 项目
+  lines.push('## Top 项目');
+  lines.push('');
+  lines.push('| 项目 | token | 会话 |');
+  lines.push('|---|---:|---:|');
+  for (const p of groupByProject(events).slice(0, 5)) {
+    const name = p.projectDir.replace(/^\/Users\/[^/]+/, '~') || '(unknown)';
+    lines.push(`| ${name} | ${fmtTokens(rawTotal(p.totals))} | ${p.sessions.size} |`);
+  }
+  lines.push('');
+
+  // Top 浪费（硬浪费优先，再补缓存重读类）
+  lines.push('## Top 浪费信号');
+  lines.push('');
+  const findings = detectWaste(ctx.traces, ctx.config, range.since, range.until, tz);
+  const hard = findings.filter((f) => ['api_retry', 'failure_loop', 'zombie_session'].includes(f.type));
+  const soft = findings.filter((f) => !['api_retry', 'failure_loop', 'zombie_session'].includes(f.type));
+  const topFindings = [...hard, ...soft]
+    .sort((a, b) => rawTotal(b.tokensWasted) - rawTotal(a.tokensWasted))
+    .slice(0, 3);
+  if (topFindings.length === 0) {
+    lines.push('未检测到明显浪费信号 🎉');
+  } else {
+    for (const f of topFindings) {
+      const proj = (f.projectDir || '').replace(/^\/Users\/[^/]+/, '~').split('/').pop() || f.projectDir;
+      lines.push(`- **${MD_TYPE_LABEL[f.type]}** · ${f.agent} · ${proj}：${f.detail}`);
+    }
+  }
+  lines.push('');
+  lines.push(`---`);
+  lines.push(`agentmeter · 纯本地 · 零遥测 · [github.com/telunsu11/agentmeter](https://github.com/telunsu11/agentmeter)`);
+  console.log(lines.join('\n'));
 }

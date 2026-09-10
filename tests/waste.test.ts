@@ -117,9 +117,10 @@ describe('浪费检测引擎', () => {
   });
 
   it('长会话税：上下文越线后续跑 ≥3 轮触发，浪费=超出健康线部分', () => {
-    // 4 轮，每轮 ctx = 10k 输入 + 190k 缓存读 = 200k（健康线 150k）
+    // 4 轮，每轮 ctx = 10k 输入 + 190k 缓存读 = 200k（显式健康线 150k，默认 400K 见下一条用例）
+    const cfg = { waste: { contextBloatTokens: 150_000 } };
     const fat = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(10000, 500, 190000) });
-    const findings = detectWaste([fat(0), fat(1), fat(2), fat(3)]);
+    const findings = detectWaste([fat(0), fat(1), fat(2), fat(3)], cfg);
     const bloat = findings.find((f) => f.type === 'context_bloat');
     expect(bloat).toBeTruthy();
     expect(bloat!.count).toBe(4);
@@ -134,7 +135,15 @@ describe('浪费检测引擎', () => {
 
     // 越线但只跑了 2 轮（阈值 3）→ 不触发
     const fat = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(10000, 500, 190000) });
-    expect(detectWaste([fat(0), fat(1)]).find((f) => f.type === 'context_bloat')).toBeUndefined();
+    expect(detectWaste([fat(0), fat(1)], { waste: { contextBloatTokens: 150_000 } }).find((f) => f.type === 'context_bloat')).toBeUndefined();
+  });
+
+  it('长会话税默认健康线为 400K（现代 agent 正常长会话不误报）', async () => {
+    const { defaultWasteOptions } = await import('../src/core/waste/engine.js');
+    expect(defaultWasteOptions().contextBloatTokens).toBe(400_000);
+    // 200k 上下文在默认阈值下不触发
+    const mid = (i: number) => trace({ ts: `2026-09-01T01:0${i}:00Z`, tokens: T(10000, 500, 190000) });
+    expect(detectWaste(Array.from({ length: 6 }, (_, i) => mid(i))).find((f) => f.type === 'context_bloat')).toBeUndefined();
   });
 
   it('长会话税：健康线可配置', () => {

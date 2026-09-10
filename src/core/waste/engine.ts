@@ -26,7 +26,7 @@ export function defaultWasteOptions(config?: AgentMeterConfig): WasteOptions {
   return {
     loopMinRepeats: config?.waste?.loopMinRepeats ?? 3,
     duplicateReadMin: config?.waste?.duplicateReadMin ?? 4,
-    contextBloatTokens: config?.waste?.contextBloatTokens ?? 150_000,
+    contextBloatTokens: config?.waste?.contextBloatTokens ?? 400_000,
     contextBloatMinTurns: config?.waste?.contextBloatMinTurns ?? 3,
   };
 }
@@ -76,6 +76,8 @@ export function detectWaste(
  * 检测"单轮上下文（输入+缓存读写）越过健康线后仍继续 ≥N 轮"的会话，
  * 浪费量 = 每轮超出健康线的部分（按 input/cacheRead/cacheWrite 占比分摊）。
  * 建议：/compact、开新会话、或让 agent 主动总结收尾。
+ * 健康线默认 400K：现代 agent 正常工作流就会到几百 K 上下文，
+ * 阈值过低会把正常长会话全部标记为浪费、淹没其他信号。
  */
 function detectContextBloat(traces: TurnTrace[], opts: WasteOptions): WasteFinding[] {
   const beyond: TurnTrace[] = [];

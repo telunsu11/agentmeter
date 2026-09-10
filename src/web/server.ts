@@ -46,6 +46,7 @@ export function handleApi(ctx: CliContext, req: http.IncomingMessage, res: http.
 
   const findings = detectWaste(ctx.traces, ctx.config, since, undefined, tz);
   const { byType, grand } = wasteTotals(findings);
+  const hardOnly = wasteTotals(findings.filter((f) => ['api_retry', 'failure_loop', 'zombie_session'].includes(f.type))).grand;
   const scopeTotal = rawTotal(totalsOf(events));
 
   const quotas = quotaStatus(ctx.events, ctx.config, tz, new Date());
@@ -58,6 +59,8 @@ export function handleApi(ctx: CliContext, req: http.IncomingMessage, res: http.
     today: byDay[byDay.length - 1]?.weighted ?? 0,
     waste: {
       total: rawTotal(grand),
+      hardTotal: rawTotal(hardOnly),
+      hardRatio: scopeTotal > 0 ? rawTotal(hardOnly) / scopeTotal : 0,
       ratio: scopeTotal > 0 ? rawTotal(grand) / scopeTotal : 0,
       byType: Object.fromEntries(
         (Object.keys(byType) as WasteType[]).map((t) => [t, rawTotal(byType[t])]),
@@ -159,7 +162,8 @@ async function load() {
   document.getElementById('cards').innerHTML = [
     card('今日（加权）', fmt(d.today)),
     card('近 ' + d.days + ' 天（raw）', fmt(d.scopeTotal)),
-    card('估算浪费', fmt(d.waste.total), (d.waste.ratio*100).toFixed(1) + '% · ' + d.tz, d.waste.ratio > 0.15),
+    card('硬浪费', fmt(d.waste.hardTotal ?? 0), '可避免 · ' + d.tz, (d.waste.hardRatio ?? 0) > 0.1),
+    card('含重读浪费', fmt(d.waste.total), (d.waste.ratio*100).toFixed(1) + '%', d.waste.ratio > 0.3),
     card('数据截至', d.generatedAt.slice(11,19) + ' UTC'),
   ].join('');
 

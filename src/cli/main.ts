@@ -16,7 +16,7 @@ const HELP = `
   agentmeter projects           哪个项目最烧
   agentmeter sessions           会话级明细（Top N）
   agentmeter waste              浪费审计：无效重试 / 失败循环 / 上下文重启…
-  agentmeter quota              配额窗口使用情况（需配置限额）
+  agentmeter quota              配额窗口使用情况；preset 一键写入套餐限额
   agentmeter watch              持续监控 + 配额预警通知；--once 单次检查
   agentmeter statusline         Claude Code statusline 集成（stdin JSON）
   agentmeter web                本地仪表盘（默认 http://localhost:8787）
@@ -29,6 +29,7 @@ const HELP = `
   --last 7                     最近 N 天/月（配合 week/month）
   --json                       机器可读输出
   --cost                       显示成本估算（默认隐藏）
+  --markdown                   week 命令输出可分享的 markdown 周报
   --tz Asia/Shanghai           时区覆盖
   --rescan                     忽略缓存全量重扫
   --config <path>              指定配置文件
@@ -65,7 +66,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  const needsTraces = cmd === 'waste' || cmd === 'web' || cmd === 'quota';
+  const needsTraces = cmd === 'waste' || cmd === 'web' || cmd === 'quota' || flags['markdown'] === true;
   const ctx = await buildContext({ flags, withTraces: needsTraces });
 
   switch (cmd) {

@@ -31,7 +31,8 @@ export async function runWatchCommand(_ctx: CliContext, flags: Record<string, st
 
   const check = async (): Promise<void> => {
     const ctx = await buildContext({ flags });
-    const statuses = computeQuotaStatus(ctx.events, ctx.config, ctx.tz, new Date());
+    const now = new Date();
+    const statuses = computeQuotaStatus(ctx.events, ctx.config, ctx.tz, now);
     const cacheDir = defaultCacheDirCompat();
     const state = loadAlertState(cacheDir);
     const thresholds = (ctx.config.alerts?.thresholds ?? [0.8, 0.95]).slice().sort((a, b) => a - b);
@@ -55,6 +56,40 @@ export async function runWatchCommand(_ctx: CliContext, flags: Record<string, st
         }
       }
     }
+    // 该 compact 了：近 15 分钟活跃的会话，上下文逼近健康线即提醒（事前预防）
+    const compactThreshold = ctx.config.waste?.contextBloatTokens ?? 400_000;
+    const activeMs = now.getTime() - 15 * 60_000;
+    const lastCtx = new Map<string, { agent: string; sessionId: string; projectDir: string; ctxSize: number; ts: string }>();
+    for (const e of ctx.events) {
+      const t = Date.parse(e.ts);
+      if (t < activeMs) continue;
+      const key = `${e.agent}:${e.sessionId}`;
+      const prev = lastCtx.get(key);
+      if (!prev || t >= Date.parse(prev.ts)) {
+        lastCtx.set(key, {
+          agent: e.agent,
+          sessionId: e.sessionId,
+          projectDir: e.projectDir,
+          ctxSize: e.inputTokens + e.cacheReadTokens + e.cacheWriteTokens,
+          ts: e.ts,
+        });
+      }
+    }
+    for (const s of lastCtx.values()) {
+      const key = `compact|${s.agent}|${s.sessionId}`;
+      const wasArmed = state.armed[key] === true;
+      if (s.ctxSize >= compactThreshold * 0.9 && !wasArmed) {
+        state.armed[key] = true;
+        const proj = s.projectDir.split('/').pop() || s.projectDir || '?';
+        const msg = `${s.agent} 会话上下文已达 ${fmtTokens(s.ctxSize)}（健康线 ${fmtTokens(compactThreshold)}）· ${proj}，建议 /compact 或开新会话`;
+        if (!quiet) console.log(C.yellow(`⚠️  ${msg}`));
+        if (channel !== 'none') await sendNotification(channel, 'agentmeter · 该 compact 了', msg);
+      } else if (s.ctxSize < compactThreshold * 0.5 && wasArmed) {
+        // 已 compact（上下文回落）→ 重新武装
+        state.armed[key] = false;
+      }
+    }
+
     saveAlertState(cacheDir, state);
 
     if (!quiet) {
